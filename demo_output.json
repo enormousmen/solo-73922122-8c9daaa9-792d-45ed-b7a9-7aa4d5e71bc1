@@ -14,13 +14,13 @@
         "confirmed_devices": [],
         "pending_devices": [],
         "application_count": 0,
-        "updated_at": "2026-11-22T17:51:44.762439+00:00"
+        "updated_at": "2026-11-23T11:12:40.144890+00:00"
       }
     },
     {
       "step": "apply_r3",
       "response": {
-        "application_id": "app-71108a660c0e",
+        "application_id": "app-ff07d6d1c6fe",
         "prefix": "10.11.0.0/16",
         "decision": "approved",
         "batch": [
@@ -39,13 +39,18 @@
         "failing_scenarios": [],
         "failing_scenarios_truncated": false,
         "message": "全部 2 种新旧组合核算通过，本批 1 台设备放行；登记成功回执前按不确定设备处理",
-        "decided_at": "2026-11-22T17:51:44.767653+00:00"
+        "decided_at": "2026-11-23T11:12:40.150614+00:00",
+        "cache_headers": {
+          "X-States-Computed": "2",
+          "X-Cache-Hits": "0",
+          "X-Cache-Size": "2"
+        }
       }
     },
     {
       "step": "apply_r4_before_receipt",
       "response": {
-        "application_id": "app-d4e9a608a4f6",
+        "application_id": "app-0ff428ac1ac0",
         "prefix": "10.11.0.0/16",
         "decision": "rejected",
         "batch": [
@@ -83,7 +88,12 @@
         ],
         "failing_scenarios_truncated": false,
         "message": "在 1/4 种新旧组合下存在断路/环路/超载，整批退回，原有放行记录不变",
-        "decided_at": "2026-11-22T17:51:44.769091+00:00"
+        "decided_at": "2026-11-23T11:12:40.152099+00:00",
+        "cache_headers": {
+          "X-States-Computed": "2",
+          "X-Cache-Hits": "2",
+          "X-Cache-Size": "4"
+        }
       }
     },
     {
@@ -102,7 +112,7 @@
           "r3"
         ],
         "application_count": 2,
-        "updated_at": "2026-11-22T17:51:44.769091+00:00",
+        "updated_at": "2026-11-23T11:12:40.152099+00:00",
         "plan": {
           "prefix": "10.11.0.0/16",
           "exit_node": "exit",
@@ -185,7 +195,7 @@
         },
         "applications": [
           {
-            "application_id": "app-71108a660c0e",
+            "application_id": "app-ff07d6d1c6fe",
             "prefix": "10.11.0.0/16",
             "decision": "approved",
             "batch": [
@@ -204,10 +214,10 @@
             "failing_scenarios": [],
             "failing_scenarios_truncated": false,
             "message": "全部 2 种新旧组合核算通过，本批 1 台设备放行；登记成功回执前按不确定设备处理",
-            "decided_at": "2026-11-22T17:51:44.767653+00:00"
+            "decided_at": "2026-11-23T11:12:40.150614+00:00"
           },
           {
-            "application_id": "app-d4e9a608a4f6",
+            "application_id": "app-0ff428ac1ac0",
             "prefix": "10.11.0.0/16",
             "decision": "rejected",
             "batch": [
@@ -245,10 +255,10 @@
             ],
             "failing_scenarios_truncated": false,
             "message": "在 1/4 种新旧组合下存在断路/环路/超载，整批退回，原有放行记录不变",
-            "decided_at": "2026-11-22T17:51:44.769091+00:00"
+            "decided_at": "2026-11-23T11:12:40.152099+00:00"
           }
         ],
-        "created_at": "2026-11-22T17:51:44.762405+00:00"
+        "created_at": "2026-11-23T11:12:40.144861+00:00"
       }
     },
     {
@@ -256,19 +266,19 @@
       "response": {
         "prefix": "10.11.0.0/16",
         "device": "r3",
-        "receipt_id": "rcpt-f21de9d75def",
+        "receipt_id": "rcpt-36058e936076",
         "status": "registered",
         "confirmed_devices": [
           "r3"
         ],
         "pending_devices": [],
-        "recorded_at": "2026-11-22T17:51:44.774560+00:00"
+        "recorded_at": "2026-11-23T11:12:40.157578+00:00"
       }
     },
     {
       "step": "apply_r4_after_receipt",
       "response": {
-        "application_id": "app-19af899762a8",
+        "application_id": "app-0e76cc1616a5",
         "prefix": "10.11.0.0/16",
         "decision": "approved",
         "batch": [
@@ -287,7 +297,59 @@
         "failing_scenarios": [],
         "failing_scenarios_truncated": false,
         "message": "全部 2 种新旧组合核算通过，本批 1 台设备放行；登记成功回执前按不确定设备处理",
-        "decided_at": "2026-11-22T17:51:44.775778+00:00"
+        "decided_at": "2026-11-23T11:12:40.158810+00:00",
+        "cache_headers": {
+          "X-States-Computed": "0",
+          "X-Cache-Hits": "2",
+          "X-Cache-Size": "4"
+        }
+      }
+    },
+    {
+      "step": "overwrite_plan",
+      "response": {
+        "prefix": "10.11.0.0/16",
+        "exit_node": "exit",
+        "routers": [
+          "r1",
+          "r2",
+          "r3",
+          "r4"
+        ],
+        "confirmed_devices": [],
+        "pending_devices": [],
+        "application_count": 0,
+        "updated_at": "2026-11-23T11:12:40.160032+00:00"
+      }
+    },
+    {
+      "step": "apply_r3_after_overwrite",
+      "response": {
+        "application_id": "app-0054a5746cf2",
+        "prefix": "10.11.0.0/16",
+        "decision": "approved",
+        "batch": [
+          "r3"
+        ],
+        "uncertain_devices": [
+          "r3"
+        ],
+        "scenarios_evaluated": 2,
+        "failing_scenarios_count": 0,
+        "fault_summary": {
+          "断路": 0,
+          "环路": 0,
+          "超载": 0
+        },
+        "failing_scenarios": [],
+        "failing_scenarios_truncated": false,
+        "message": "全部 2 种新旧组合核算通过，本批 1 台设备放行；登记成功回执前按不确定设备处理",
+        "decided_at": "2026-11-23T11:12:40.161357+00:00",
+        "cache_headers": {
+          "X-States-Computed": "2",
+          "X-Cache-Hits": "0",
+          "X-Cache-Size": "2"
+        }
       }
     }
   ],
@@ -295,7 +357,7 @@
     {
       "step": "apply_r1",
       "response": {
-        "application_id": "app-eb04b1b1231f",
+        "application_id": "app-06ba9dc46f6c",
         "prefix": "10.12.0.0/16",
         "decision": "rejected",
         "batch": [
@@ -347,7 +409,12 @@
         ],
         "failing_scenarios_truncated": false,
         "message": "在 2/2 种新旧组合下存在断路/环路/超载，整批退回，原有放行记录不变",
-        "decided_at": "2026-11-22T17:51:44.778144+00:00"
+        "decided_at": "2026-11-23T11:12:40.163676+00:00",
+        "cache_headers": {
+          "X-States-Computed": "2",
+          "X-Cache-Hits": "0",
+          "X-Cache-Size": "4"
+        }
       }
     }
   ]

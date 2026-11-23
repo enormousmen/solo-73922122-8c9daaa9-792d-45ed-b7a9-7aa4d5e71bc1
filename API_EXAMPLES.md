@@ -1,6 +1,28 @@
-# API 示例：回执到达前后放行结果不同
+# API 示例：回执到达前后放行结果不同 + 状态缓存复用对照
 
 以下响应均为服务真实输出（完整 JSON 见 `demo_output.json`，可由 `python scripts/demo.py` 重新生成）。
+
+## 状态缓存与响应头
+
+同一网段反复申请换路时，穷举会反复追踪相同的转发路径。服务把**方案内每台设备走新路
+还是旧路的一份完整状态**（confirmed 强制 new、不确定设备按穷举位取 old/new、其余设备
+保持 old）的核算结果缓存在单进程内，跨请求复用：
+
+- 只有方案内**每台**设备的新旧选择都一致，才算同一状态、才能命中；
+- 登记回执不清除缓存：回执只改变之后会出现哪些完整状态，与缓存中吻合的结果继续复用；
+- 全量覆盖方案会让该网段 `plan_version` 递增并清空其缓存条目，之后必须按新方案重新核算；
+- 缓存为 LRU，单进程跨请求最多保留 **256** 份状态结果。
+
+放行接口（`POST /plans/applications`）通过响应头给出本次的核算/命中情况：
+
+| 响应头 | 含义 |
+| --- | --- |
+| `X-States-Computed` | 本次**实际核算**（缓存未命中、逐跳追踪）的状态数 |
+| `X-Cache-Hits` | 本次命中缓存、直接复用结果的状态数 |
+| `X-Cache-Size` | 请求结束后进程内缓存中的状态结果份数 |
+
+两者满足 `X-States-Computed + X-Cache-Hits = scenarios_evaluated`。缓存只跳过重复追踪，
+不改变场景编号、枚举顺序、放行结论、故障统计与故障示例——与全量核算逐字一致。
 
 ## 拓扑（目的网段 10.11.0.0/16，出口 exit）
 
@@ -40,6 +62,8 @@ curl -X POST 'http://localhost:8000/plans/applications?prefix=10.11.0.0%2F16' \
   -H 'Content-Type: application/json' -d '{"devices":["r3"]}'
 ```
 
+响应头：`X-States-Computed: 2`、`X-Cache-Hits: 0`、`X-Cache-Size: 2`（首次申请，两个状态都要实际核算）。
+
 ```json
 {
   "application_id": "app-b1124b2ab343",
@@ -65,6 +89,11 @@ curl -X POST 'http://localhost:8000/plans/applications?prefix=10.11.0.0%2F16' \
 curl -X POST 'http://localhost:8000/plans/applications?prefix=10.11.0.0%2F16' \
   -H 'Content-Type: application/json' -d '{"devices":["r4"]}'
 ```
+
+响应头：`X-States-Computed: 2`、`X-Cache-Hits: 2`、`X-Cache-Size: 4`。
+4 个穷举状态里，`r3=old` 的两份完整状态与第 2 步核算过的状态（r3 单独申请时
+r3=old 那一态、其余设备全部 old）逐设备一致，直接复用；`r3=new` 的两份是新状态，
+需要实际核算。
 
 ```json
 {
@@ -126,6 +155,10 @@ curl -X POST 'http://localhost:8000/plans/applications?prefix=10.11.0.0%2F16' \
   -H 'Content-Type: application/json' -d '{"devices":["r4"]}'
 ```
 
+响应头：`X-States-Computed: 0`、`X-Cache-Hits: 2`、`X-Cache-Size: 4`。
+登记回执没有清缓存：r3 强制新路由后出现的两个完整状态（r3=new、r4=old/new），
+在第 3 步穷举 `{r3,r4}` 时都已核算过，本次**零实际核算、全部复用**。
+
 ```json
 {
   "application_id": "app-8722195038e9",
@@ -140,6 +173,37 @@ curl -X POST 'http://localhost:8000/plans/applications?prefix=10.11.0.0%2F16' \
 ```
 
 **同一批设备（r4），回执前退回、回执后放行**，这就是回执改变裁决结果的完整过程。
+
+### 6. 全量覆盖方案后 —— 缓存失效，按新方案重新核算
+
+对同一前缀重新 `PUT /plans`（即使内容相同）：放行状态与申请历史重置，`plan_version`
+递增，该网段此前缓存的状态结果被清空。
+
+```bash
+curl -X PUT http://localhost:8000/plans \
+  -H 'Content-Type: application/json' -d @scripts/plan_a.json
+
+curl -s -D - -o /dev/null -X POST \
+  'http://localhost:8000/plans/applications?prefix=10.11.0.0%2F16' \
+  -H 'Content-Type: application/json' -d '{"devices":["r3"]}' | grep -iE 'X-States|X-Cache'
+```
+
+```text
+X-States-Computed: 2
+X-Cache-Hits: 0
+X-Cache-Size: 2
+```
+
+覆盖后第一次申请 0 命中、2 个状态全部重新核算；其它网段的缓存条目不受影响。
+
+### 核算次数对照表（场景 A）
+
+| 步骤 | 申请 | 评估场景数 | 实际核算 `X-States-Computed` | 命中 `X-Cache-Hits` | 裁决 |
+| --- | --- | --- | --- | --- | --- |
+| 2 | r3（首次） | 2 | 2 | 0 | approved |
+| 3 | r4（r3 在途） | 4 | 2 | 2 | rejected |
+| 5 | r4（r3 已回执） | 2 | 0 | 2 | approved |
+| 6 | r3（覆盖方案后） | 2 | 2 | 0 | approved |
 
 ## 附：断路 + 超载的故障定位（10.12.0.0/16）
 

@@ -1,16 +1,20 @@
 """端到端演示：启动 uvicorn 后依次演示
 
-场景 A（10.11.0.0/16，环路 + 回执改变裁决）：
+场景 A（10.11.0.0/16，环路 + 回执改变裁决 + 状态缓存复用）：
   1) 录入 r1~r4 的新旧下一跳、入口流量、有向链路容量
-  2) 申请 r3 放行 -> approved（进入“已放行未确认”）
-  3) 申请 r4 放行 -> rejected（r3=old & r4=new 时 r3<->r4 环路，整批退回，原记录保留）
+  2) 申请 r3 放行 -> approved（进入“已放行未确认”），2 个状态全部实际核算
+  3) 申请 r4 放行 -> rejected（r3=old & r4=new 时 r3<->r4 环路，整批退回，原记录保留），
+     4 个状态中 2 个命中缓存、2 个新核算
   4) 登记 r3 成功回执
-  5) 再次申请 r4 -> approved（r3 已按新路由 r3->exit 转发）
+  5) 再次申请 r4 -> approved（r3 已按新路由 r3->exit 转发），2 个状态全部命中缓存
+  6) 全量覆盖同一网段方案 -> plan_version 递增、该网段缓存清空
+  7) 覆盖后再次申请 r3 -> 必须按新方案重新核算（0 命中、2 个状态全部实际核算）
 
 场景 B（10.12.0.0/16，断路 + 超载故障定位）：
   申请 r1 -> rejected，返回断路位置 r1 -> r3（无此链路）与超载位置 r3 -> exit
 
-只依赖标准库；完整 JSON 响应写入 demo_output.json。
+只依赖标准库；完整 JSON 响应（含响应头 X-States-Computed / X-Cache-Hits / X-Cache-Size）
+写入 demo_output.json。
 """
 
 from __future__ import annotations
@@ -30,9 +34,19 @@ from app.main import app  # noqa: E402
 OUTPUT_FILE = Path(__file__).resolve().parent.parent / "demo_output.json"
 
 
-async def call(client: httpx.AsyncClient, method: str, path: str, body: dict | None = None) -> dict:
+async def call(
+    client: httpx.AsyncClient, method: str, path: str, body: dict | None = None
+) -> dict:
     resp = await client.request(method, path, json=body, timeout=10)
     data = resp.json()
+    # 缓存相关响应头随响应一并归档，便于对照“实际核算状态数/命中数”
+    cache_headers = {
+        key: resp.headers[key]
+        for key in ("X-States-Computed", "X-Cache-Hits", "X-Cache-Size")
+        if key in resp.headers
+    }
+    if cache_headers:
+        data = {**data, "cache_headers": cache_headers}
     if resp.status_code >= 400:
         return {"http_status": resp.status_code, **data}
     return data
@@ -51,6 +65,10 @@ def banner(title: str) -> None:
 def summarize_decision(resp: dict) -> None:
     print(f"  裁决: {resp['decision']} | 评估场景数: {resp['scenarios_evaluated']} "
           f"| 故障场景数: {resp['failing_scenarios_count']} | 故障统计: {resp['fault_summary']}")
+    headers = resp.get("cache_headers", {})
+    if headers:
+        print(f"  缓存: 实际核算状态数={headers['X-States-Computed']} "
+              f"命中={headers['X-Cache-Hits']} 缓存规模={headers['X-Cache-Size']}")
     print(f"  说明: {resp['message']}")
     for scenario in resp["failing_scenarios"][:3]:
         states = ", ".join(f"{d}={s}" for d, s in sorted(scenario["device_states"].items()))
@@ -143,11 +161,26 @@ async def main() -> None:
               f"confirmed={resp['confirmed_devices']}")
         archive["plan_a"].append({"step": "receipt_r3", "response": resp})
 
-        banner("场景 A：回执到达后重新申请 [r4] —— 预期 approved")
+        banner("场景 A：回执到达后重新申请 [r4] —— 预期 approved，且两个状态全部命中缓存")
         resp = await call(client, "POST", plan_url(PLAN_A["prefix"], "applications"), {"devices": ["r4"]})
         summarize_decision(resp)
         archive["plan_a"].append({"step": "apply_r4_after_receipt", "response": resp})
         assert resp["decision"] == "approved"
+        assert resp["cache_headers"]["X-Cache-Hits"] == "2"
+        assert resp["cache_headers"]["X-States-Computed"] == "0"
+
+        banner("场景 A：全量覆盖同一网段方案 —— 版本递增，该网段缓存清空")
+        resp = await call(client, "PUT", "/plans", PLAN_A)
+        archive["plan_a"].append({"step": "overwrite_plan", "response": resp})
+        print(f"  已覆盖录入，当前 pending={resp['pending_devices']} confirmed={resp['confirmed_devices']}")
+
+        banner("场景 A：覆盖后重新申请 [r3] —— 按新方案重新核算，0 命中")
+        resp = await call(client, "POST", plan_url(PLAN_A["prefix"], "applications"), {"devices": ["r3"]})
+        summarize_decision(resp)
+        archive["plan_a"].append({"step": "apply_r3_after_overwrite", "response": resp})
+        assert resp["decision"] == "approved"
+        assert resp["cache_headers"]["X-Cache-Hits"] == "0"
+        assert resp["cache_headers"]["X-States-Computed"] == "2"
 
         banner("场景 B：录入方案并申请 [r1] —— 预期 rejected：断路 + 超载，带故障位置")
         await call(client, "PUT", "/plans", PLAN_B)

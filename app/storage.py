@@ -21,6 +21,9 @@ def utc_now_iso() -> str:
 @dataclass
 class PrefixState:
     plan: PlanIn
+    # 方案版本号：首次录入为 1，每次全量覆盖递增；作为状态缓存键的一部分，
+    # 保证覆盖方案后必须按新方案重新核算，旧缓存结果不可能命中
+    plan_version: int = 1
     # 已放行且已登记成功回执：按新路由转发
     confirmed: set[str] = field(default_factory=set)
     # 已放行但尚未确认：新旧路由都可能生效
@@ -49,13 +52,18 @@ class Store:
         return state
 
     async def put_plan(self, plan: PlanIn) -> PrefixState:
-        """全量覆盖录入；覆盖后原放行记录重置（重新核算的基线）。"""
+        """全量覆盖录入；覆盖后原放行记录重置（重新核算的基线）。
+
+        覆盖时递增 ``plan_version``，使该网段此前缓存的状态结果全部失效，
+        后续申请必须按新方案重新核算。
+        """
         existing = self._prefixes.get(plan.prefix)
         if existing is None:
             state = PrefixState(plan=plan)
             self._prefixes[plan.prefix] = state
         else:
             existing.plan = plan
+            existing.plan_version += 1
             existing.confirmed = set()
             existing.pending = set()
             existing.receipts = {}

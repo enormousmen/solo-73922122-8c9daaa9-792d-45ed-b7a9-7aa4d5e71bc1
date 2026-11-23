@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 
+from .cache import state_cache
 from .engine import MAX_REPORTED_SCENARIOS, evaluate
 from .models import (
     ApplicationIn,
@@ -21,11 +22,13 @@ from .storage import store, utc_now_iso
 
 app = FastAPI(
     title="机房换路放行服务",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "值班员录入目的网段的出口、路由器新旧下一跳、入口流量与有向链路容量，"
         "按批申请下发新配置。服务端穷举本批设备与已放行未确认设备的所有新旧"
         "组合，保证任意切换次序下流量均可到达出口且链路不超载；有风险则整批退回。"
+        "同一网段反复换路时，按“方案内每台设备的完整新旧状态”在进程内复用已核算"
+        "结果（LRU，最多 256 份）；方案覆盖后版本递增、缓存失效，须按新方案重新核算。"
     ),
 )
 
@@ -52,6 +55,9 @@ async def put_plan(plan: PlanIn) -> PlanSummary:
     """录入或全量覆盖一个目的网段的换路方案。"""
     async with store.lock:
         state = await store.put_plan(plan)
+        # 覆盖方案后版本已递增；主动清理该网段的旧状态缓存，
+        # 之后的申请按新方案重新核算（缓存键中的版本号也保证旧结果不会命中）
+        state_cache.invalidate_prefix(plan.prefix)
         return _summary(state)
 
 
@@ -77,7 +83,7 @@ async def get_plan(prefix: str) -> PlanDetail:
 
 
 @app.post("/plans/applications", response_model=ApplicationOut)
-async def apply(prefix: str, body: ApplicationIn) -> ApplicationOut:
+async def apply(prefix: str, body: ApplicationIn, response: Response) -> ApplicationOut:
     """申请一批设备下发新配置；整批通过或整批退回。"""
     async with store.lock:
         try:
@@ -105,7 +111,22 @@ async def apply(prefix: str, body: ApplicationIn) -> ApplicationOut:
 
         # 不确定设备 = 本批 ∪ 已放行未确认；已确认设备强制新路由
         uncertain = batch | state.pending
-        result = evaluate(state.plan, confirmed=set(state.confirmed), uncertain=uncertain)
+        result = evaluate(
+            state.plan,
+            confirmed=set(state.confirmed),
+            uncertain=uncertain,
+            prefix=prefix,
+            plan_version=state.plan_version,
+            cache=state_cache,
+        )
+
+        # 响应头：本次实际核算（未命中缓存、逐跳追踪）的状态数，以及命中数/缓存规模
+        response.headers["X-States-Computed"] = str(result["states_computed"])
+        response.headers["X-Cache-Hits"] = str(result["cache_hits"])
+        response.headers["X-Cache-Size"] = str(len(state_cache))
+        response.headers["Access-Control-Expose-Headers"] = (
+            "X-States-Computed, X-Cache-Hits, X-Cache-Size"
+        )
 
         application_id = f"app-{uuid.uuid4().hex[:12]}"
         decided_at = utc_now_iso()

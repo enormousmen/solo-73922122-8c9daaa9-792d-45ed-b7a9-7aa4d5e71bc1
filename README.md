@@ -26,21 +26,51 @@
 全部场景安全才放行；放行后本批设备进入 `pending`。登记成功回执后设备转入 `confirmed`，
 之后的裁决按新路由计算。退回不改变任何放行状态，申请记录仍留痕可审计。
 
+## 状态缓存（同一网段反复换路时复用核算结果）
+
+逐跳追踪的最小单位是方案内**每台设备走新路还是旧路的一份完整状态**：
+confirmed 设备强制 `new`、不确定设备按穷举位取 `old/new`、其余设备保持 `old`。
+穷举每个场景前先用这份完整状态查进程内 LRU 缓存（`app/cache.py`）：
+
+- **同一状态的判定**：缓存键为 `(prefix, plan_version, 每台设备的新旧选择元组)`，
+  方案里每台设备走新路还是旧路都一致才算同一状态，任一设备不同即未命中、重新核算；
+- **登记回执后继续复用**：回执不清缓存，只改变后续会出现哪些完整状态；
+  与缓存中吻合的历史结果直接复用（见 `API_EXAMPLES.md` 第 5 步：0 次实际核算、2 命中）；
+- **覆盖方案后重新核算**：`PUT /plans` 覆盖时 `plan_version` 递增并清空该网段缓存条目，
+  版本号也保证旧结果在键层面永不命中；其它网段缓存不受影响；
+- **容量**：单进程跨请求最多缓存 **256** 份状态结果，超出按最近最少使用（LRU）淘汰；
+- **本轮部分命中**：本轮需要的状态中，开算时已缓存的全部复用，未命中的继续核算并回填，
+  两者相加仍等于 `scenarios_evaluated`；
+- **结果一致性**：缓存只跳过重复追踪，场景编号、枚举顺序、放行结论、故障统计与故障
+  示例与全量核算逐字一致（自测 `tests/test_state_cache.py` 逐字段对照无缓存核算）。
+
+放行接口响应头：
+
+| 响应头 | 含义 |
+| --- | --- |
+| `X-States-Computed` | 本次实际核算（未命中缓存、逐跳追踪）的状态数 |
+| `X-Cache-Hits` | 本次命中缓存直接复用的状态数 |
+| `X-Cache-Size` | 请求结束后进程内缓存的状态结果份数（≤ 256） |
+
 并发安全：所有写操作在同一把 `asyncio.Lock` 内完成，并发申请按裁决时刻已登记的
-批次和回执串行判断，后一个申请看到的一定是前一个落库后的状态。
+批次和回执串行判断，后一个申请看到的一定是前一个落库后的状态；缓存访问也在该锁内，
+无需额外同步。
 
 ## 目录结构
 
 ```
 app/
   models.py    # Pydantic 模型与录入校验（12 台上限、节点/链路/路由一致性）
-  engine.py    # 核算引擎：2^n 场景穷举 + 断路/环路/超载检测
-  storage.py   # 进程内存储、设备分组、asyncio 锁
-  main.py      # FastAPI 路由
-tests/         # pytest：引擎单测 + API 全流程 + 并发裁决
+  engine.py    # 核算引擎：2^n 场景穷举 + 断路/环路/超载检测 + 逐状态缓存查询
+  cache.py     # 进程内 LRU 状态结果缓存（上限 256，按网段+方案版本+完整状态索引）
+  storage.py   # 进程内存储、设备分组、方案版本号、asyncio 锁
+  main.py      # FastAPI 路由（含 X-States-Computed 等缓存响应头）
+tests/
+  test_engine_and_api.py  # pytest：引擎单测 + API 全流程 + 并发裁决
+  test_state_cache.py     # pytest：缓存复用一致性、LRU 容量、回执/覆盖语义、响应头
 scripts/
   demo.py            # 端到端演示（in-process ASGI，标准库 + httpx）
-  curl_example.sh    # 等价的 curl 调用示例
+  curl_example.sh    # 等价的 curl 调用示例（含响应头与覆盖后重新核算对照）
   plan_a.json        # 环路场景录入载荷
   plan_b.json        # 断路+超载场景录入载荷
 Dockerfile
@@ -65,7 +95,8 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
-> 存储为进程内内存，且并发裁决依赖单进程内的 asyncio 锁，因此 Compose/uvicorn 均固定 1 个 worker。
+> 存储与状态缓存均为单进程内内存，且并发裁决依赖单进程内的 asyncio 锁，因此
+> Compose/uvicorn 均固定 1 个 worker；多进程/多实例部署会使缓存与锁失效。
 
 ## API 一览
 
@@ -74,11 +105,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 健康检查 |
-| PUT | `/plans` | 录入或全量覆盖一个目的网段的方案（覆盖后放行状态重置） |
+| PUT | `/plans` | 录入或全量覆盖一个目的网段的方案（覆盖后放行状态重置、缓存失效） |
 | GET | `/plans` | 列出所有网段摘要 |
 | GET | `/plans/detail?prefix=` | 查询网段全量状态，含全部申请历史 |
-| POST | `/plans/applications?prefix=` | 提交一批设备的换路申请，整批通过或整批退回 |
-| POST | `/plans/receipts?prefix=` | 登记已放行设备的成功回执（幂等） |
+| POST | `/plans/applications?prefix=` | 提交一批设备的换路申请，整批通过或整批退回；响应头带 `X-States-Computed`/`X-Cache-Hits`/`X-Cache-Size` |
+| POST | `/plans/receipts?prefix=` | 登记已放行设备的成功回执（幂等，不清缓存） |
 
 错误码：网段不存在 → 404；设备不属于该网段/未放行先登记回执 → 400/409；
 重复申请已在 `pending` 或 `confirmed` 中的设备 → 409。
@@ -88,12 +119,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```bash
 pip install -r requirements.txt
 pytest -q
-python scripts/demo.py
-bash scripts/curl_example.sh   # 需要先启动服务
+python scripts/demo.py            # 端到端演示，并重新生成 demo_output.json（含缓存响应头）
+bash scripts/curl_example.sh      # 需要先启动服务；对照回执登记与方案覆盖前后的裁决与核算次数
 ```
 
-## 回执到达前后放行结果不同的示例
+## 回执到达前后放行结果不同、缓存复用/失效的示例
 
 见 [API_EXAMPLES.md](API_EXAMPLES.md)。简述：申请 `r4` 时因 `r3` 已放行未确认，
-`r3=old & r4=new` 组合出现 `r3 <-> r4` 环路而被整批退回；登记 `r3` 成功回执后，
-`r3` 强制按新路由 `r3 -> exit` 转发，重新申请 `r4` 即通过。
+`r3=old & r4=new` 组合出现 `r3 <-> r4` 环路而被整批退回（4 场景中 2 命中、2 新核算）；
+登记 `r3` 成功回执后，`r3` 强制按新路由 `r3 -> exit` 转发，重新申请 `r4` 即通过，
+且两个状态全部命中缓存（实际核算 0 次）；全量覆盖方案后缓存失效，再次申请须重新核算。
