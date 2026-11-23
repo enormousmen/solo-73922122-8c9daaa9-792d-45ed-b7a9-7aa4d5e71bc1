@@ -1,0 +1,19 @@
+{
+  "prefix": "10.12.0.0/16",
+  "exit_node": "exit",
+  "routers": ["r1", "r2", "r3"],
+  "links": [
+    {"src": "r1", "dst": "r2", "capacity": 100},
+    {"src": "r2", "dst": "r3", "capacity": 150},
+    {"src": "r3", "dst": "exit", "capacity": 100}
+  ],
+  "ingresses": [
+    {"node": "r1", "traffic": 60},
+    {"node": "r2", "traffic": 60}
+  ],
+  "routes": [
+    {"device": "r1", "old_next_hop": "r2", "new_next_hop": "r3"},
+    {"device": "r2", "old_next_hop": "r3", "new_next_hop": "r3"},
+    {"device": "r3", "old_next_hop": "exit", "new_next_hop": "exit"}
+  ]
+}

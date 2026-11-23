@@ -1,0 +1,13 @@
+services:
+  route-approval:
+    build: .
+    image: route-approval:1.0.0
+    container_name: route-approval
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
